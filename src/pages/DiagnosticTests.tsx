@@ -87,7 +87,9 @@ const DiagnosticTests = () => {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${testName}_results.pdf`;
+        const urlParts = resultUrl.split('.');
+        const ext = urlParts.length > 1 ? urlParts[urlParts.length - 1].split(/\#|\?/)[0] : '';
+        a.download = `${testName}_results${ext ? '.' + ext : ''}`;
         document.body.appendChild(a);
         a.click();
         window.URL.revokeObjectURL(url);

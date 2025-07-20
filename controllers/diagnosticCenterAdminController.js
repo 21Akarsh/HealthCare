@@ -2,6 +2,8 @@ import User from '../models/User.js';
 import DiagnosticCenter from '../models/DiagnosticCenter.js';
 import Appointment from '../models/Appointment.js';
 import DiagnosticTest from '../models/DiagnosticTest.js';
+import cloudinary from '../utils/cloudinary.js';
+import streamifier from 'streamifier';
 
 // Get Dashboard Stats for Diagnostic Center Admin
 const getDiagnosticCenterDashboard = async (req, res) => {
@@ -510,106 +512,79 @@ const deleteCenterTest = async (req, res) => {
     });
   }
 };
-// Upload test results
+
 const uploadTestResults = async (req, res) => {
   try {
-    console.log('=== UPLOAD TEST RESULTS ===');
-    console.log('Upload test results - User ID:', req.user.id);
-    console.log('Upload test results - User role:', req.user.role);
-    console.log('Upload test results - Request body:', req.body);
-    
-    const { appointmentId, summary } = req.body;
+    const { summary, appointmentId } = req.body;
     const file = req.file;
 
-    if (!appointmentId) {
-      console.log('Missing appointment ID');
+    if (!file || !appointmentId) {
       return res.status(400).json({
         success: false,
-        message: 'Appointment ID is required'
+        message: 'File and appointmentId are required.',
       });
     }
 
-    if (!file) {
-      console.log('Missing file');
-      return res.status(400).json({
+    // Upload to Cloudinary using a Promise wrapper
+    const uploadToCloudinary = () =>
+      new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            resource_type: 'auto',
+            folder: 'patient_results',
+          },
+          (error, result) => {
+            if (error) return reject(error);
+            resolve(result);
+          }
+        );
+        streamifier.createReadStream(file.buffer).pipe(stream);
+      });
+
+    let result;
+    try {
+      result = await uploadToCloudinary();
+      console.log('Cloudinary upload result:', result);
+    } catch (error) {
+      console.error('Cloudinary upload error:', error);
+      return res.status(500).json({
         success: false,
-        message: 'File is required'
+        message: 'Failed to upload to Cloudinary',
       });
     }
 
-    console.log('Finding diagnostic center for admin:', req.user.id);
-    // Find the diagnostic center for this admin
-    const diagnosticCenter = await DiagnosticCenter.findOne({ adminId: req.user.id });
-    console.log('Diagnostic center found:', diagnosticCenter ? { id: diagnosticCenter._id, name: diagnosticCenter.name } : 'None');
-    
-    if (!diagnosticCenter) {
-      console.log('No diagnostic center found for this admin');
-      return res.status(404).json({
-        success: false,
-        message: 'No diagnostic center found for this admin'
-      });
-    }
-
-    console.log('Finding appointment:', appointmentId);
-    // Find the appointment
-    const appointment = await Appointment.findById(appointmentId)
-      .populate('diagnosticCenterId')
-      .populate('patientId')
-      .populate('testId');
-
-    console.log('Appointment found:', appointment ? { 
-      id: appointment._id, 
-      diagnosticCenterId: appointment.diagnosticCenterId?._id,
-      status: appointment.status 
-    } : 'None');
+    // Save to Appointment
+    const appointment = await Appointment.findByIdAndUpdate(
+      appointmentId,
+      {
+        $set: {
+          'results.reportUrl': result.secure_url,
+          'results.summary': summary || '',
+          'results.uploadedAt': new Date(),
+          'status': 'completed',
+        },
+      },
+      { new: true }
+    ).populate('patientId testId');
 
     if (!appointment) {
-      console.log('Appointment not found');
       return res.status(404).json({
         success: false,
-        message: 'Appointment not found'
+        message: 'Appointment not found.',
       });
     }
 
-    console.log('Checking authorization...');
-    console.log('Appointment diagnostic center:', appointment.diagnosticCenterId._id.toString());
-    console.log('Admin diagnostic center:', diagnosticCenter._id.toString());
-
-    // Check if the appointment belongs to this diagnostic center
-    if (appointment.diagnosticCenterId._id.toString() !== diagnosticCenter._id.toString()) {
-      console.log('Authorization failed - centers do not match');
-      return res.status(403).json({
-        success: false,
-        message: 'Unauthorized to upload results for this appointment'
-      });
-    }
-
-    console.log('Authorization successful, uploading results...');
-    // In a real application, you would upload the file to cloud storage
-    // For now, we'll just store a mock URL
-    const reportUrl = `/uploads/results/${appointmentId}_${file.originalname}`;
-
-    // Update appointment with results
-    appointment.results = {
-      reportUrl,
-      summary: summary || '',
-      uploadedAt: new Date()
-    };
-
-    await appointment.save();
-    console.log('Results uploaded successfully');
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: 'Test results uploaded successfully',
-      appointment
+      message: 'Test results uploaded successfully.',
+      appointment,
     });
   } catch (error) {
     console.error('Upload test results error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: 'Failed to upload test results',
-      error: error.message
+      message: 'Internal server error',
+      error: error.message,
     });
   }
 };
